@@ -5,8 +5,6 @@ import (
 	"strings"
 )
 
-// So here's a byte arr the size of a standard DNS packet
-// and a way of keeping track of where we are. Shrimple.
 type BytePacketBuffer struct {
 	Buf [512]uint8
 	Pos uint
@@ -24,7 +22,6 @@ func (buf *BytePacketBuffer) step(steps uint) {
 		return
 	}
 	buf.Pos = newPos
-	return
 }
 
 // Seek to a given position
@@ -37,7 +34,6 @@ func (buf *BytePacketBuffer) seek(pos uint) {
 		return
 	}
 	buf.Pos = pos
-	return
 }
 
 // Read a single byte and step forward
@@ -80,29 +76,36 @@ func (buf *BytePacketBuffer) getRange(start uint, len uint) []uint8 {
 }
 
 // Read a two-byte number
-func (buf *BytePacketBuffer) readUint16() (uint16, error) {
+func (buf *BytePacketBuffer) readUint16() uint16 {
+	if buf.Err != nil {
+		return 0
+	}
 	b1 := buf.read()
 	b2 := buf.read()
 	if buf.Err != nil {
-		return 0, fmt.Errorf("couldn't read u16: %w", buf.Err)
+		buf.Err = fmt.Errorf("couldn't read u16: %w", buf.Err)
+		return 0
 	}
-	return uint16(b1)<<8 | uint16(b2), nil
+	return uint16(b1)<<8 | uint16(b2)
 }
 
-// Read four-byte number
-func (buf *BytePacketBuffer) readUint32() (uint32, error) {
+// Read a four-byte number
+func (buf *BytePacketBuffer) readUint32() uint32 {
+	if buf.Err != nil {
+		return 0
+	}
 	b1 := buf.read()
 	b2 := buf.read()
 	b3 := buf.read()
 	b4 := buf.read()
 	if buf.Err != nil {
-		return 0, fmt.Errorf("couldn't read u32: %w", buf.Err)
+		buf.Err = fmt.Errorf("couldn't read u32: %w", buf.Err)
+		return 0
 	}
 	return uint32(b1)<<24 |
-			uint32(b2)<<16 |
-			uint32(b3)<<8 |
-			uint32(b4),
-		nil
+		uint32(b2)<<16 |
+		uint32(b3)<<8 |
+		uint32(b4)
 }
 
 func (buf *BytePacketBuffer) readQueryName(outstr *string) error {
@@ -146,7 +149,6 @@ func (buf *BytePacketBuffer) readQueryName(outstr *string) error {
 
 			*outstr += delim
 			strBuf := buf.getRange(pos, uint(length))
-			// Might explore alternatives to plain old type casting later
 			*outstr += strings.ToLower(string(strBuf))
 			delim = "."
 
@@ -179,13 +181,13 @@ type DNSHeader struct {
 	ID uint16
 
 	QR     bool
-	OPCODE uint8
+	OPCODE uint8 // 4 bits
 	AA     bool
 	TC     bool
 	RD     bool
 	RA     bool
-	Z      uint8
-	RCODE  ResponseCode
+	Z      uint8        // 3 bits
+	RCODE  ResponseCode // 4 bits
 
 	QDCOUNT uint16
 	ANCOUNT uint16
@@ -196,6 +198,29 @@ type DNSHeader struct {
 func (hdr *DNSHeader) read(buf *BytePacketBuffer) error {
 	hdr.ID = buf.readUint16()
 
+	flags := buf.readUint16()
+	a := uint8(flags >> 8)
+	b := uint8(flags & 0x00FF)
+
+	hdr.QR = ((a & 0x80) == 0x80)
+	hdr.OPCODE = ((a >> 3) & 0x0F)
+	hdr.AA = ((a & 0x04) == 0x04)
+	hdr.TC = ((a & 0x02) == 0x02)
+	hdr.RD = ((a & 0x01) == 0x01)
+
+	hdr.RA = ((b & 0x80) == 0x80)
+	hdr.Z = ((b >> 4) & 0x07)
+	hdr.RCODE = ResponseCode(b & 0x0F)
+
+	hdr.QDCOUNT = buf.readUint16()
+	hdr.ANCOUNT = buf.readUint16()
+	hdr.NSCOUNT = buf.readUint16()
+	hdr.ARCOUNT = buf.readUint16()
+
+	if buf.Err != nil {
+		return fmt.Errorf("couldn't read header: %w", buf.Err)
+	}
+	return nil
 }
 
 func main() {
