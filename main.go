@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // So here's a byte arr the size of a standard DNS packet
 // and a way of keeping track of where we are. Shrimple.
@@ -10,19 +13,28 @@ type BytePacketBuffer struct {
 }
 
 // Step forward a given number of steps
-func (buf *BytePacketBuffer) step(steps uint) {
-	buf.position += steps
+func (buf *BytePacketBuffer) step(steps uint) error {
+	newPos := buf.position + steps
+	if newPos > 511 {
+		return fmt.Errorf("Overstepped buffer by %d bytes.", newPos-511)
+	}
+	buf.position = newPos
+	return nil
 }
 
-// Jump to a given position
-func (buf *BytePacketBuffer) seek(pos uint) {
+// Seek to a given position
+func (buf *BytePacketBuffer) seek(pos uint) error {
+	if pos > 511 {
+		return fmt.Errorf("Oversought buffer by %d bytes.", pos-511)
+	}
 	buf.position = pos
+	return nil
 }
 
 // Read a single byte and step forward
 func (buf *BytePacketBuffer) read() (uint8, error) {
 	if buf.position > 511 {
-		return 0, fmt.Errorf("end of buffer\n")
+		return 0, fmt.Errorf("End of buffer.")
 	}
 	res := buf.buffer[buf.position]
 	buf.position++
@@ -32,7 +44,7 @@ func (buf *BytePacketBuffer) read() (uint8, error) {
 // Get a single byte without changing position
 func (buf *BytePacketBuffer) get(pos uint) (uint8, error) {
 	if pos > 511 {
-		return 0, fmt.Errorf("end of buffer\n")
+		return 0, fmt.Errorf("End of buffer.")
 	}
 	return buf.buffer[pos], nil
 }
@@ -41,7 +53,7 @@ func (buf *BytePacketBuffer) get(pos uint) (uint8, error) {
 func (buf *BytePacketBuffer) getRange(start uint, len uint) ([]uint8, error) {
 	end := start + len
 	if end > 511 {
-		return nil, fmt.Errorf("end of buffer\n")
+		return nil, fmt.Errorf("End of buffer.")
 	}
 	return buf.buffer[start:end], nil
 }
@@ -50,37 +62,37 @@ func (buf *BytePacketBuffer) getRange(start uint, len uint) ([]uint8, error) {
 func (buf *BytePacketBuffer) readUint16() (uint16, error) {
 	firstByte, err := buf.read()
 	if err != nil {
-		return 0, fmt.Errorf("Couldn't read a u16 1/2: %s", err)
+		return 0, fmt.Errorf("Couldn't read u16 1/2: %s", err)
 	}
 	secondByte, err := buf.read()
 	if err != nil {
-		return 0, fmt.Errorf("Couldn't read a u16 2/2: %s", err)
+		return 0, fmt.Errorf("Couldn't read u16 2/2: %s", err)
 	}
-	return (uint16)(firstByte)<<8 | (uint16)(secondByte), nil
+	return uint16(firstByte)<<8 | uint16(secondByte), nil
 }
 
-// Read a four-byte number
+// Read four-byte number
 func (buf *BytePacketBuffer) readUint32() (uint32, error) {
 	firstByte, err := buf.read()
 	if err != nil {
-		return 0, fmt.Errorf("Couldn't read a u32 1/4: %s", err)
+		return 0, fmt.Errorf("Couldn't read u32 1/4: %s", err)
 	}
 	secondByte, err := buf.read()
 	if err != nil {
-		return 0, fmt.Errorf("Couldn't read a u32 2/4: %s", err)
+		return 0, fmt.Errorf("Couldn't read u32 2/4: %s", err)
 	}
 	thirdByte, err := buf.read()
 	if err != nil {
-		return 0, fmt.Errorf("Couldn't read a u32 3/4: %s", err)
+		return 0, fmt.Errorf("Couldn't read u32 3/4: %s", err)
 	}
 	fourthByte, err := buf.read()
 	if err != nil {
-		return 0, fmt.Errorf("Couldn't read a u32 4/4: %s", err)
+		return 0, fmt.Errorf("Couldn't read u32 4/4: %s", err)
 	}
-	return (uint32)(firstByte)<<24 |
-			(uint32)(secondByte)<<16 |
-			(uint32)(thirdByte)<<8 |
-			(uint32)(fourthByte),
+	return uint32(firstByte)<<24 |
+			uint32(secondByte)<<16 |
+			uint32(thirdByte)<<8 |
+			uint32(fourthByte),
 		nil
 }
 
@@ -91,17 +103,17 @@ func (buf *BytePacketBuffer) readQueryName(outstr *string) error {
 	const maxJumps = 5
 	jumpsPerformed := 0
 
-	delimiter := ""
+	delim := ""
 	for true {
 		// I don't think you should reasonably need more than 3, for that matter
 		if jumpsPerformed > 5 {
-			return fmt.Errorf("Jump limit of %d exceeded", maxJumps)
+			return fmt.Errorf("Jump limit of %d exceeded.", maxJumps)
 		}
 
 		// At this point we're looking at the length byte of some label
 		len, err := buf.get(pos)
 		if err != nil {
-			return fmt.Errorf("Couldn't read a label: %s", err)
+			return fmt.Errorf("Couldn't read label: %s", err)
 		}
 
 		// Two MSB set <=> jump to the offset given by the remaining 6+8=14 bits
@@ -110,9 +122,46 @@ func (buf *BytePacketBuffer) readQueryName(outstr *string) error {
 				buf.seek(pos + 2)
 			}
 
-		}
+			b2, err := buf.get(pos + 1)
+			if err != nil {
+				return fmt.Errorf("Couldn't read lower byte of jump label: %s", err)
+			}
+			offset := ((uint16(len) ^ 0xC0) << 8) | uint16(b2)
+			pos = uint(offset)
 
+			jumped = true
+			jumpsPerformed++
+
+			continue
+		} else {
+			// Otherwise we're looking at a regular label
+			pos++
+
+			// Zero-length label <=> end of domain name
+			if len == 0 {
+				break
+			}
+
+			*outstr += delim
+			strBuf, err := buf.getRange(pos, uint(len))
+			if err != nil {
+				return fmt.Errorf("Couldn't get byte range from domain name: %s", err)
+			}
+			// Might explore alternatives to plain old type casting later
+			*outstr += strings.ToLower(string(strBuf))
+			delim = "."
+
+			// Move on to the next label
+			pos += uint(len)
+		}
 	}
+	if !jumped {
+		err := buf.seek(pos)
+		if err != nil {
+			return fmt.Errorf("Couldn't seek to end of domain name: %s", err)
+		}
+	}
+	return nil
 }
 
 func main() {
