@@ -8,17 +8,17 @@ import (
 // So here's a byte arr the size of a standard DNS packet
 // and a way of keeping track of where we are. Shrimple.
 type BytePacketBuffer struct {
-	buffer   [512]uint8
-	position uint
+	Buf [512]uint8
+	Pos uint
 }
 
 // Step forward a given number of steps
 func (buf *BytePacketBuffer) step(steps uint) error {
-	newPos := buf.position + steps
+	newPos := buf.Pos + steps
 	if newPos > 511 {
 		return fmt.Errorf("Overstepped buffer by %d bytes.", newPos-511)
 	}
-	buf.position = newPos
+	buf.Pos = newPos
 	return nil
 }
 
@@ -27,17 +27,17 @@ func (buf *BytePacketBuffer) seek(pos uint) error {
 	if pos > 511 {
 		return fmt.Errorf("Oversought buffer by %d bytes.", pos-511)
 	}
-	buf.position = pos
+	buf.Pos = pos
 	return nil
 }
 
 // Read a single byte and step forward
 func (buf *BytePacketBuffer) read() (uint8, error) {
-	if buf.position > 511 {
+	if buf.Pos > 511 {
 		return 0, fmt.Errorf("End of buffer.")
 	}
-	res := buf.buffer[buf.position]
-	buf.position++
+	res := buf.Buf[buf.Pos]
+	buf.Pos++
 	return res, nil
 }
 
@@ -46,7 +46,7 @@ func (buf *BytePacketBuffer) get(pos uint) (uint8, error) {
 	if pos > 511 {
 		return 0, fmt.Errorf("End of buffer.")
 	}
-	return buf.buffer[pos], nil
+	return buf.Buf[pos], nil
 }
 
 // Get a range of bytes
@@ -55,7 +55,7 @@ func (buf *BytePacketBuffer) getRange(start uint, len uint) ([]uint8, error) {
 	if end > 511 {
 		return nil, fmt.Errorf("End of buffer.")
 	}
-	return buf.buffer[start:end], nil
+	return buf.Buf[start:end], nil
 }
 
 // Read a two-byte number
@@ -98,7 +98,7 @@ func (buf *BytePacketBuffer) readUint32() (uint32, error) {
 
 func (buf *BytePacketBuffer) readQueryName(outstr *string) error {
 	// These are all meant to make dealing with jumps possible
-	pos := buf.position
+	pos := buf.Pos
 	jumped := false
 	const maxJumps = 5
 	jumpsPerformed := 0
@@ -162,6 +162,36 @@ func (buf *BytePacketBuffer) readQueryName(outstr *string) error {
 		}
 	}
 	return nil
+}
+
+// Go has a pretty cool way of expressing the idea of an enum.
+type ResponseCode uint8
+
+const (
+	NOERROR = iota
+	FORMERR
+	SERVFAIL
+	NXDOMAIN
+	NOTIMP
+	REFUSED
+)
+
+type DNSHeader struct {
+	ID uint16
+
+	QR     bool
+	OPCODE uint8
+	AA     bool
+	TC     bool
+	RD     bool
+	RA     bool
+	Z      uint8
+	RCODE  ResponseCode
+
+	QDCOUNT uint16
+	ANCOUNT uint16
+	NSCOUNT uint16
+	ARCOUNT uint16
 }
 
 func main() {
