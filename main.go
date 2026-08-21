@@ -62,11 +62,11 @@ func (buf *BytePacketBuffer) getRange(start uint, len uint) ([]uint8, error) {
 func (buf *BytePacketBuffer) readUint16() (uint16, error) {
 	firstByte, err := buf.read()
 	if err != nil {
-		return 0, fmt.Errorf("Couldn't read u16 1/2: %s", err)
+		return 0, fmt.Errorf("Couldn't read u16 1/2: %w", err)
 	}
 	secondByte, err := buf.read()
 	if err != nil {
-		return 0, fmt.Errorf("Couldn't read u16 2/2: %s", err)
+		return 0, fmt.Errorf("Couldn't read u16 2/2: %w", err)
 	}
 	return uint16(firstByte)<<8 | uint16(secondByte), nil
 }
@@ -75,19 +75,19 @@ func (buf *BytePacketBuffer) readUint16() (uint16, error) {
 func (buf *BytePacketBuffer) readUint32() (uint32, error) {
 	firstByte, err := buf.read()
 	if err != nil {
-		return 0, fmt.Errorf("Couldn't read u32 1/4: %s", err)
+		return 0, fmt.Errorf("Couldn't read u32 1/4: %w", err)
 	}
 	secondByte, err := buf.read()
 	if err != nil {
-		return 0, fmt.Errorf("Couldn't read u32 2/4: %s", err)
+		return 0, fmt.Errorf("Couldn't read u32 2/4: %w", err)
 	}
 	thirdByte, err := buf.read()
 	if err != nil {
-		return 0, fmt.Errorf("Couldn't read u32 3/4: %s", err)
+		return 0, fmt.Errorf("Couldn't read u32 3/4: %w", err)
 	}
 	fourthByte, err := buf.read()
 	if err != nil {
-		return 0, fmt.Errorf("Couldn't read u32 4/4: %s", err)
+		return 0, fmt.Errorf("Couldn't read u32 4/4: %w", err)
 	}
 	return uint32(firstByte)<<24 |
 			uint32(secondByte)<<16 |
@@ -113,7 +113,7 @@ func (buf *BytePacketBuffer) readQueryName(outstr *string) error {
 		// At this point we're looking at the length byte of some label
 		len, err := buf.get(pos)
 		if err != nil {
-			return fmt.Errorf("Couldn't read label: %s", err)
+			return fmt.Errorf("Couldn't read label: %w", err)
 		}
 
 		// Two MSB set <=> jump to the offset given by the remaining 6+8=14 bits
@@ -124,7 +124,7 @@ func (buf *BytePacketBuffer) readQueryName(outstr *string) error {
 
 			b2, err := buf.get(pos + 1)
 			if err != nil {
-				return fmt.Errorf("Couldn't read lower byte of jump label: %s", err)
+				return fmt.Errorf("Couldn't read lower byte of jump label: %w", err)
 			}
 			offset := ((uint16(len) ^ 0xC0) << 8) | uint16(b2)
 			pos = uint(offset)
@@ -145,7 +145,7 @@ func (buf *BytePacketBuffer) readQueryName(outstr *string) error {
 			*outstr += delim
 			strBuf, err := buf.getRange(pos, uint(len))
 			if err != nil {
-				return fmt.Errorf("Couldn't get byte range from domain name: %s", err)
+				return fmt.Errorf("Couldn't get byte range from domain name: %w", err)
 			}
 			// Might explore alternatives to plain old type casting later
 			*outstr += strings.ToLower(string(strBuf))
@@ -158,7 +158,7 @@ func (buf *BytePacketBuffer) readQueryName(outstr *string) error {
 	if !jumped {
 		err := buf.seek(pos)
 		if err != nil {
-			return fmt.Errorf("Couldn't seek to end of domain name: %s", err)
+			return fmt.Errorf("Couldn't seek to end of domain name: %w", err)
 		}
 	}
 	return nil
@@ -192,6 +192,15 @@ type DNSHeader struct {
 	ANCOUNT uint16
 	NSCOUNT uint16
 	ARCOUNT uint16
+}
+
+// Go also has a pretty cool way of handling errors, I've just...
+// gotta step back and let it steep for a moment.
+func (hdr *DNSHeader) read(buf *BytePacketBuffer) error {
+	hdr.id, err = buf.readUint16()
+	if err != nil {
+		return fmt.Errorf("Couldn't read id from buffer: %w", err)
+	}
 }
 
 func main() {
