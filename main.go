@@ -10,89 +10,98 @@ import (
 type BytePacketBuffer struct {
 	Buf [512]uint8
 	Pos uint
+	Err error
 }
 
 // Step forward a given number of steps
-func (buf *BytePacketBuffer) step(steps uint) error {
+func (buf *BytePacketBuffer) step(steps uint) {
+	if buf.Err != nil {
+		return
+	}
 	newPos := buf.Pos + steps
 	if newPos > 511 {
-		return fmt.Errorf("Overstepped buffer by %d bytes.", newPos-511)
+		buf.Err = fmt.Errorf("overstepped buffer by %d bytes", newPos-511)
+		return
 	}
 	buf.Pos = newPos
-	return nil
+	return
 }
 
 // Seek to a given position
-func (buf *BytePacketBuffer) seek(pos uint) error {
+func (buf *BytePacketBuffer) seek(pos uint) {
+	if buf.Err != nil {
+		return
+	}
 	if pos > 511 {
-		return fmt.Errorf("Oversought buffer by %d bytes.", pos-511)
+		buf.Err = fmt.Errorf("oversought buffer by %d bytes", pos-511)
+		return
 	}
 	buf.Pos = pos
-	return nil
+	return
 }
 
 // Read a single byte and step forward
-func (buf *BytePacketBuffer) read() (uint8, error) {
+func (buf *BytePacketBuffer) read() uint8 {
+	if buf.Err != nil {
+		return 0
+	}
 	if buf.Pos > 511 {
-		return 0, fmt.Errorf("End of buffer.")
+		buf.Err = fmt.Errorf("end of buffer")
+		return 0
 	}
 	res := buf.Buf[buf.Pos]
 	buf.Pos++
-	return res, nil
+	return res
 }
 
 // Get a single byte without changing position
-func (buf *BytePacketBuffer) get(pos uint) (uint8, error) {
-	if pos > 511 {
-		return 0, fmt.Errorf("End of buffer.")
+func (buf *BytePacketBuffer) get(pos uint) uint8 {
+	if buf.Err != nil {
+		return 0
 	}
-	return buf.Buf[pos], nil
+	if pos > 511 {
+		buf.Err = fmt.Errorf("end of buffer")
+		return 0
+	}
+	return buf.Buf[pos]
 }
 
 // Get a range of bytes
-func (buf *BytePacketBuffer) getRange(start uint, len uint) ([]uint8, error) {
+func (buf *BytePacketBuffer) getRange(start uint, len uint) []uint8 {
+	if buf.Err != nil {
+		return nil
+	}
 	end := start + len
 	if end > 511 {
-		return nil, fmt.Errorf("End of buffer.")
+		buf.Err = fmt.Errorf("end of buffer")
+		return nil
 	}
-	return buf.Buf[start:end], nil
+	return buf.Buf[start:end]
 }
 
 // Read a two-byte number
 func (buf *BytePacketBuffer) readUint16() (uint16, error) {
-	firstByte, err := buf.read()
-	if err != nil {
-		return 0, fmt.Errorf("Couldn't read u16 1/2: %w", err)
+	b1 := buf.read()
+	b2 := buf.read()
+	if buf.Err != nil {
+		return 0, fmt.Errorf("couldn't read u16: %w", buf.Err)
 	}
-	secondByte, err := buf.read()
-	if err != nil {
-		return 0, fmt.Errorf("Couldn't read u16 2/2: %w", err)
-	}
-	return uint16(firstByte)<<8 | uint16(secondByte), nil
+	return uint16(b1)<<8 | uint16(b2), nil
 }
 
 // Read four-byte number
 func (buf *BytePacketBuffer) readUint32() (uint32, error) {
-	firstByte, err := buf.read()
-	if err != nil {
-		return 0, fmt.Errorf("Couldn't read u32 1/4: %w", err)
+	b1 := buf.read()
+	b2 := buf.read()
+	b3 := buf.read()
+	b4 := buf.read()
+	if buf.Err != nil {
+		return 0, fmt.Errorf("couldn't read u32: %w", buf.Err)
 	}
-	secondByte, err := buf.read()
-	if err != nil {
-		return 0, fmt.Errorf("Couldn't read u32 2/4: %w", err)
-	}
-	thirdByte, err := buf.read()
-	if err != nil {
-		return 0, fmt.Errorf("Couldn't read u32 3/4: %w", err)
-	}
-	fourthByte, err := buf.read()
-	if err != nil {
-		return 0, fmt.Errorf("Couldn't read u32 4/4: %w", err)
-	}
-	return uint32(firstByte)<<24 |
-			uint32(secondByte)<<16 |
-			uint32(thirdByte)<<8 |
-			uint32(fourthByte),
+	return uint32(b1)<<24 |
+			uint32(b2)<<16 |
+			uint32(b3)<<8 |
+			uint32(b4),
 		nil
 }
 
@@ -105,28 +114,21 @@ func (buf *BytePacketBuffer) readQueryName(outstr *string) error {
 
 	delim := ""
 	for true {
-		// I don't think you should reasonably need more than 3, for that matter
-		if jumpsPerformed > 5 {
-			return fmt.Errorf("Jump limit of %d exceeded.", maxJumps)
+		if jumpsPerformed > 3 {
+			return fmt.Errorf("jump limit of %d exceeded", maxJumps)
 		}
 
 		// At this point we're looking at the length byte of some label
-		len, err := buf.get(pos)
-		if err != nil {
-			return fmt.Errorf("Couldn't read label: %w", err)
-		}
+		length := buf.get(pos)
 
 		// Two MSB set <=> jump to the offset given by the remaining 6+8=14 bits
-		if (len & 0xC0) == 0xC0 {
+		if (length & 0xC0) == 0xC0 {
 			if !jumped {
 				buf.seek(pos + 2)
 			}
 
-			b2, err := buf.get(pos + 1)
-			if err != nil {
-				return fmt.Errorf("Couldn't read lower byte of jump label: %w", err)
-			}
-			offset := ((uint16(len) ^ 0xC0) << 8) | uint16(b2)
+			b2 := buf.get(pos + 1)
+			offset := ((uint16(length) ^ 0xC0) << 8) | uint16(b2)
 			pos = uint(offset)
 
 			jumped = true
@@ -138,28 +140,25 @@ func (buf *BytePacketBuffer) readQueryName(outstr *string) error {
 			pos++
 
 			// Zero-length label <=> end of domain name
-			if len == 0 {
+			if length == 0 {
 				break
 			}
 
 			*outstr += delim
-			strBuf, err := buf.getRange(pos, uint(len))
-			if err != nil {
-				return fmt.Errorf("Couldn't get byte range from domain name: %w", err)
-			}
+			strBuf := buf.getRange(pos, uint(length))
 			// Might explore alternatives to plain old type casting later
 			*outstr += strings.ToLower(string(strBuf))
 			delim = "."
 
 			// Move on to the next label
-			pos += uint(len)
+			pos += uint(length)
 		}
 	}
 	if !jumped {
-		err := buf.seek(pos)
-		if err != nil {
-			return fmt.Errorf("Couldn't seek to end of domain name: %w", err)
-		}
+		buf.seek(pos)
+	}
+	if buf.Err != nil {
+		return fmt.Errorf("couldn't read query name: %w", buf.Err)
 	}
 	return nil
 }
@@ -168,12 +167,12 @@ func (buf *BytePacketBuffer) readQueryName(outstr *string) error {
 type ResponseCode uint8
 
 const (
-	NOERROR = iota
-	FORMERR
-	SERVFAIL
-	NXDOMAIN
-	NOTIMP
-	REFUSED
+	NoError = iota
+	FormErr
+	ServFail
+	NXDomain
+	NotImp
+	Refused
 )
 
 type DNSHeader struct {
@@ -194,13 +193,9 @@ type DNSHeader struct {
 	ARCOUNT uint16
 }
 
-// Go also has a pretty cool way of handling errors, I've just...
-// gotta step back and let it steep for a moment.
 func (hdr *DNSHeader) read(buf *BytePacketBuffer) error {
-	hdr.id, err = buf.readUint16()
-	if err != nil {
-		return fmt.Errorf("Couldn't read id from buffer: %w", err)
-	}
+	hdr.ID = buf.readUint16()
+
 }
 
 func main() {
