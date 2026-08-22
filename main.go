@@ -2,11 +2,12 @@ package main
 
 import (
 	"fmt"
+	"net/netip"
 	"strings"
 )
 
 type BytePacketBuffer struct {
-	Buf [512]uint8
+	Buf [512]byte
 	Pos uint
 	Err error
 }
@@ -42,7 +43,7 @@ func (buf *BytePacketBuffer) seek(pos uint) {
 }
 
 // Read a single byte and step forward
-func (buf *BytePacketBuffer) read() uint8 {
+func (buf *BytePacketBuffer) read() byte {
 	if buf.Err != nil {
 		return 0
 	}
@@ -56,7 +57,7 @@ func (buf *BytePacketBuffer) read() uint8 {
 }
 
 // Get a single byte without changing position
-func (buf *BytePacketBuffer) get(pos uint) uint8 {
+func (buf *BytePacketBuffer) get(pos uint) byte {
 	if buf.Err != nil {
 		return 0
 	}
@@ -68,7 +69,7 @@ func (buf *BytePacketBuffer) get(pos uint) uint8 {
 }
 
 // Get a range of bytes
-func (buf *BytePacketBuffer) getRange(start uint, len uint) []uint8 {
+func (buf *BytePacketBuffer) getRange(start uint, len uint) []byte {
 	if buf.Err != nil {
 		return nil
 	}
@@ -178,12 +179,12 @@ func ToResponseCode(val uint8) (ResponseCode, error) {
 type DNSHeader struct {
 	ID      uint16
 	QR      bool
-	OpCode  uint8
+	OpCode  byte
 	AA      bool
 	TC      bool
 	RD      bool
 	RA      bool
-	Z       uint8
+	Z       byte
 	RCode   ResponseCode
 	QDCount uint16
 	ANCount uint16
@@ -195,8 +196,8 @@ func (h *DNSHeader) read(buf *BytePacketBuffer) error {
 	h.ID = buf.readUint16()
 
 	flags := buf.readUint16()
-	a := uint8(flags >> 8)
-	b := uint8(flags & 0x00FF)
+	a := byte(flags >> 8)
+	b := byte(flags & 0x00FF)
 
 	h.QR = ((a & 0x80) == 0x80)
 	h.OpCode = ((a >> 3) & 0x0F)
@@ -259,12 +260,26 @@ func (q *DNSQuestion) read(buf *BytePacketBuffer) error {
 	}
 	q.QType = qtype
 
-	buf.readUint16() // QClass
+	buf.readUint16() // class
 
 	if err := buf.Err; err != nil {
 		return fmt.Errorf("couldn't read question: %w", err)
 	}
 	return nil
+}
+
+type DNSRecord struct {
+	// Common preamble
+	Domain string
+	Type   QueryType
+	TTL    uint32
+	Len    uint16
+
+	// A
+	Addr netip.Addr
+
+	// Unknown
+	RawData []byte
 }
 
 func main() {
