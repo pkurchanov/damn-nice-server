@@ -11,17 +11,22 @@ type BytePacketBuffer struct {
 	Err error
 }
 
+func (buf *BytePacketBuffer) setErr(err error) {
+	if buf.Err == nil && err != nil {
+		buf.Err = err
+	}
+}
+
 // Step forward a given number of steps
 func (buf *BytePacketBuffer) step(steps uint) {
 	if buf.Err != nil {
 		return
 	}
-	newPos := buf.Pos + steps
-	if newPos > 511 {
-		buf.Err = fmt.Errorf("overstepped buffer by %d bytes", newPos-511)
+	if buf.Pos+steps > 511 {
+		buf.setErr(fmt.Errorf("overstepped buffer by %d bytes", (buf.Pos+steps)-511))
 		return
 	}
-	buf.Pos = newPos
+	buf.Pos += steps
 }
 
 // Seek to a given position
@@ -30,7 +35,7 @@ func (buf *BytePacketBuffer) seek(pos uint) {
 		return
 	}
 	if pos > 511 {
-		buf.Err = fmt.Errorf("oversought buffer by %d bytes", pos-511)
+		buf.setErr(fmt.Errorf("oversought buffer by %d bytes", pos-511))
 		return
 	}
 	buf.Pos = pos
@@ -42,7 +47,7 @@ func (buf *BytePacketBuffer) read() uint8 {
 		return 0
 	}
 	if buf.Pos > 511 {
-		buf.Err = fmt.Errorf("end of buffer")
+		buf.setErr(fmt.Errorf("end of buffer"))
 		return 0
 	}
 	res := buf.Buf[buf.Pos]
@@ -56,7 +61,7 @@ func (buf *BytePacketBuffer) get(pos uint) uint8 {
 		return 0
 	}
 	if pos > 511 {
-		buf.Err = fmt.Errorf("end of buffer")
+		buf.setErr(fmt.Errorf("end of buffer"))
 		return 0
 	}
 	return buf.Buf[pos]
@@ -67,64 +72,52 @@ func (buf *BytePacketBuffer) getRange(start uint, len uint) []uint8 {
 	if buf.Err != nil {
 		return nil
 	}
-	end := start + len
-	if end > 511 {
-		buf.Err = fmt.Errorf("end of buffer")
+	if start+len > 511 {
+		buf.setErr(fmt.Errorf("end of buffer"))
 		return nil
 	}
-	return buf.Buf[start:end]
+	return buf.Buf[start : start+len]
 }
 
 // Read a two-byte number
 func (buf *BytePacketBuffer) readUint16() uint16 {
-	if buf.Err != nil {
-		return 0
-	}
 	b1 := buf.read()
 	b2 := buf.read()
-	if buf.Err != nil {
-		buf.Err = fmt.Errorf("couldn't read u16: %w", buf.Err)
-		return 0
-	}
 	return uint16(b1)<<8 | uint16(b2)
 }
 
 // Read a four-byte number
 func (buf *BytePacketBuffer) readUint32() uint32 {
-	if buf.Err != nil {
-		return 0
-	}
 	b1 := buf.read()
 	b2 := buf.read()
 	b3 := buf.read()
 	b4 := buf.read()
-	if buf.Err != nil {
-		buf.Err = fmt.Errorf("couldn't read u32: %w", buf.Err)
-		return 0
-	}
-	return uint32(b1)<<24 |
-		uint32(b2)<<16 |
-		uint32(b3)<<8 |
-		uint32(b4)
+	return uint32(b1)<<24 | uint32(b2)<<16 | uint32(b3)<<8 | uint32(b4)
 }
 
-func (buf *BytePacketBuffer) readQueryName(outstr *string) error {
-	// These are all meant to make dealing with jumps possible
+// Read a qname
+func (buf *BytePacketBuffer) readQueryName() (string, error) {
+	if buf.Err != nil {
+		return "", buf.Err
+	}
+
+	var outstr strings.Builder
 	pos := buf.Pos
 	jumped := false
 	const maxJumps = 5
 	jumpsPerformed := 0
-
 	delim := ""
-	for true {
-		if jumpsPerformed > 3 {
-			return fmt.Errorf("jump limit of %d exceeded", maxJumps)
+
+	for {
+		if jumpsPerformed > maxJumps {
+			return "", fmt.Errorf("jump limit of %d exceeded", maxJumps)
 		}
 
-		// At this point we're looking at the length byte of some label
 		length := buf.get(pos)
+		if buf.Err != nil {
+			return "", buf.Err
+		}
 
-		// Two MSB set <=> jump to the offset given by the remaining 6+8=14 bits
 		if (length & 0xC0) == 0xC0 {
 			if !jumped {
 				buf.seek(pos + 2)
@@ -136,40 +129,36 @@ func (buf *BytePacketBuffer) readQueryName(outstr *string) error {
 
 			jumped = true
 			jumpsPerformed++
-
 			continue
-		} else {
-			// Otherwise we're looking at a regular label
-			pos++
-
-			// Zero-length label <=> end of domain name
-			if length == 0 {
-				break
-			}
-
-			*outstr += delim
-			strBuf := buf.getRange(pos, uint(length))
-			*outstr += strings.ToLower(string(strBuf))
-			delim = "."
-
-			// Move on to the next label
-			pos += uint(length)
 		}
+
+		pos++
+		if length == 0 {
+			break
+		}
+
+		outstr.WriteString(delim)
+		strBuf := buf.getRange(pos, uint(length))
+		if buf.Err != nil {
+			return "", buf.Err
+		}
+
+		outstr.WriteString(strings.ToLower(string(strBuf)))
+		delim = "."
+		pos += uint(length)
 	}
+
 	if !jumped {
 		buf.seek(pos)
 	}
-	if buf.Err != nil {
-		return fmt.Errorf("couldn't read query name: %w", buf.Err)
-	}
-	return nil
+
+	return outstr.String(), buf.Err
 }
 
-// Go has a pretty cool way of expressing the idea of an enum.
 type ResponseCode uint8
 
 const (
-	NoError = iota
+	NoError ResponseCode = iota
 	FormErr
 	ServFail
 	NXDomain
@@ -177,48 +166,103 @@ const (
 	Refused
 )
 
-type DNSHeader struct {
-	ID uint16
-
-	QR     bool
-	OPCODE uint8 // 4 bits
-	AA     bool
-	TC     bool
-	RD     bool
-	RA     bool
-	Z      uint8        // 3 bits
-	RCODE  ResponseCode // 4 bits
-
-	QDCOUNT uint16
-	ANCOUNT uint16
-	NSCOUNT uint16
-	ARCOUNT uint16
+func ToResponseCode(val uint8) (ResponseCode, error) {
+	switch ResponseCode(val) {
+	case NoError, FormErr, ServFail, NXDomain, NotImp, Refused:
+		return ResponseCode(val), nil
+	default:
+		return NoError, fmt.Errorf("unknown response code: %d", val)
+	}
 }
 
-func (hdr *DNSHeader) read(buf *BytePacketBuffer) error {
-	hdr.ID = buf.readUint16()
+type DNSHeader struct {
+	ID      uint16
+	QR      bool
+	OpCode  uint8
+	AA      bool
+	TC      bool
+	RD      bool
+	RA      bool
+	Z       uint8
+	RCode   ResponseCode
+	QDCount uint16
+	ANCount uint16
+	NSCount uint16
+	ARCount uint16
+}
+
+func (h *DNSHeader) read(buf *BytePacketBuffer) error {
+	h.ID = buf.readUint16()
 
 	flags := buf.readUint16()
 	a := uint8(flags >> 8)
 	b := uint8(flags & 0x00FF)
 
-	hdr.QR = ((a & 0x80) == 0x80)
-	hdr.OPCODE = ((a >> 3) & 0x0F)
-	hdr.AA = ((a & 0x04) == 0x04)
-	hdr.TC = ((a & 0x02) == 0x02)
-	hdr.RD = ((a & 0x01) == 0x01)
+	h.QR = ((a & 0x80) == 0x80)
+	h.OpCode = ((a >> 3) & 0x0F)
+	h.AA = ((a & 0x04) == 0x04)
+	h.TC = ((a & 0x02) == 0x02)
+	h.RD = ((a & 0x01) == 0x01)
 
-	hdr.RA = ((b & 0x80) == 0x80)
-	hdr.Z = ((b >> 4) & 0x07)
-	hdr.RCODE = ResponseCode(b & 0x0F)
+	h.RA = ((b & 0x80) == 0x80)
+	h.Z = ((b >> 4) & 0x07)
 
-	hdr.QDCOUNT = buf.readUint16()
-	hdr.ANCOUNT = buf.readUint16()
-	hdr.NSCOUNT = buf.readUint16()
-	hdr.ARCOUNT = buf.readUint16()
+	rcode, err := ToResponseCode(b & 0x0F)
+	if err != nil {
+		buf.setErr(err)
+	}
+	h.RCode = rcode
 
-	if buf.Err != nil {
-		return fmt.Errorf("couldn't read header: %w", buf.Err)
+	h.QDCount = buf.readUint16()
+	h.ANCount = buf.readUint16()
+	h.NSCount = buf.readUint16()
+	h.ARCount = buf.readUint16()
+
+	if err := buf.Err; err != nil {
+		return fmt.Errorf("couldn't read header: %w", err)
+	}
+	return nil
+}
+
+type QueryType uint16
+
+const (
+	Unknown QueryType = iota
+	A
+)
+
+func ToQueryType(val uint16) (QueryType, error) {
+	switch QueryType(val) {
+	case A:
+		return QueryType(val), nil
+	default:
+		return Unknown, fmt.Errorf("unknown query type: %d", val)
+	}
+}
+
+type DNSQuestion struct {
+	Name  string
+	QType QueryType
+}
+
+func (q *DNSQuestion) read(buf *BytePacketBuffer) error {
+	name, err := buf.readQueryName()
+	if err != nil {
+		return fmt.Errorf("couldn't read question name: %w", err)
+	}
+	q.Name = name
+
+	qtype, err := ToQueryType(buf.readUint16())
+	if err != nil {
+		buf.setErr(err)
+		return fmt.Errorf("couldn't read question type: %w", err)
+	}
+	q.QType = qtype
+
+	buf.readUint16() // QClass
+
+	if err := buf.Err; err != nil {
+		return fmt.Errorf("couldn't read question: %w", err)
 	}
 	return nil
 }
